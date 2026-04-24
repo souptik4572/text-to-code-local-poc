@@ -56,9 +56,31 @@ def show_format_error(container, format_error: dict[str, str | int] | None) -> N
             st.code(f"{format_error['text']}\n{caret_padding}^", language="python")
 
 
+def show_chat_item(item: dict[str, str]) -> None:
+    with st.container(border=True):
+        st.write(item["instruction"])
+        status = item.get("status", "done")
+        if status == "generating":
+            st.caption("Generating code...")
+        elif status == "error":
+            st.caption(f"Failed: {item.get('error', 'Unknown error')}")
+        else:
+            st.caption("Code generated")
+
+
 st.set_page_config(page_title="AI Coding POC", page_icon=":computer:", layout="wide")
 st.title("AI-Assisted Coding Tool (POC)")
 st.caption(f"Backend URL: {BACKEND_URL}")
+
+
+@st.dialog("Archived Chats")
+def show_archived_chats(archived_items: list[dict[str, str]]) -> None:
+    if not archived_items:
+        st.caption("No archived chats yet.")
+        return
+
+    for item in reversed(archived_items):
+        show_chat_item(item)
 
 
 if "code_buffer" not in st.session_state:
@@ -168,16 +190,17 @@ with right_col:
     st.subheader("Code Chat")
 
     if st.session_state.chat_history:
-        for item in reversed(st.session_state.chat_history):
-            with st.container(border=True):
-                st.write(item["instruction"])
-                status = item.get("status", "done")
-                if status == "generating":
-                    st.caption("Generating code...")
-                elif status == "error":
-                    st.caption(f"Failed: {item.get('error', 'Unknown error')}")
-                else:
-                    st.caption("Code generated")
+        recent_chats = st.session_state.chat_history[-2:]
+        archived_chats = st.session_state.chat_history[:-2]
+
+        for item in reversed(recent_chats):
+            show_chat_item(item)
+
+        if archived_chats and st.button(
+            "Show Previous Chats",
+            use_container_width=True,
+        ):
+            show_archived_chats(archived_chats)
     else:
         st.caption("No prompts yet.")
 
