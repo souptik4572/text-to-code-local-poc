@@ -87,21 +87,12 @@ with left_col:
         st.subheader("Generated Code Preview")
         st.code(st.session_state.generated_code, language="python")
 
-        if st.button("Insert into Code"):
-            current = st.session_state.code_buffer.rstrip()
+        if st.button("Insert Into Code"):
             snippet = st.session_state.generated_code.strip()
-            previous = st.session_state.last_inserted_code.strip()
-
-            if previous and current.endswith(previous):
-                current = current[: -len(previous)].rstrip()
 
             if snippet:
-                if current:
-                    next_code = f"{current}\n\n{snippet}"
-                else:
-                    next_code = snippet
-                st.session_state.code_buffer = next_code
-                st.session_state.editor_content = next_code
+                st.session_state.code_buffer = snippet
+                st.session_state.editor_content = snippet
                 st.session_state.last_inserted_code = snippet
                 st.session_state.editor_version += 1
             st.rerun()
