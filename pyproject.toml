@@ -5,6 +5,7 @@ description = "POC with a FastAPI backend and Streamlit frontend."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "black",
     "fastapi",
     "requests",
     "streamlit",

@@ -1,5 +1,7 @@
+import ast
 import os
 
+import black
 import requests
 import streamlit as st
 
@@ -10,6 +12,48 @@ except ImportError:
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+
+def syntax_error_details(exc: SyntaxError, code: str) -> dict[str, str | int]:
+    line_number = exc.lineno or 1
+    lines = code.splitlines()
+    line_text = exc.text or (lines[line_number - 1] if line_number <= len(lines) else "")
+
+    return {
+        "line": line_number,
+        "column": exc.offset or 1,
+        "message": exc.msg,
+        "text": line_text.rstrip(),
+    }
+
+
+def format_python_code(code: str) -> tuple[str | None, dict[str, str | int] | None]:
+    try:
+        ast.parse(code)
+        return black.format_str(code, mode=black.FileMode()), None
+    except SyntaxError as exc:
+        return None, syntax_error_details(exc, code)
+    except black.InvalidInput as exc:
+        return None, {
+            "line": 1,
+            "column": 1,
+            "message": str(exc),
+            "text": "",
+        }
+
+
+def show_format_error(container, format_error: dict[str, str | int] | None) -> None:
+    if not format_error:
+        return
+
+    with container.container():
+        st.error(
+            f"Syntax error on line {format_error['line']}, "
+            f"column {format_error['column']}: {format_error['message']}"
+        )
+        if format_error["text"]:
+            caret_padding = " " * (int(format_error["column"]) - 1)
+            st.code(f"{format_error['text']}\n{caret_padding}^", language="python")
 
 
 st.set_page_config(page_title="AI Coding POC", page_icon=":computer:", layout="wide")
@@ -47,28 +91,34 @@ if "editor_content" not in st.session_state:
 if "editor_version" not in st.session_state:
     st.session_state.editor_version = 0
 
+if "format_error" not in st.session_state:
+    st.session_state.format_error = None
+
 
 left_col, right_col = st.columns([2, 1], gap="large")
 
 with left_col:
     st.subheader("Code Editor")
     editor_key = f"live_code_editor_{st.session_state.editor_version}"
+    format_clicked = st.button("Format Python Code")
+    format_error_container = st.empty()
 
     if st_ace is not None:
-        edited_code = st_ace(
-            value=st.session_state.editor_content,
-            language="python",
-            theme="tomorrow_night",
-            key=editor_key,
-            height=420,
-            font_size=14,
-            tab_size=4,
-            wrap=True,
-            show_gutter=True,
-            show_print_margin=False,
-            auto_update=True,
-            placeholder="Your Python code appears here...",
-        )
+        ace_kwargs = {
+            "value": st.session_state.editor_content,
+            "language": "python",
+            "theme": "tomorrow_night",
+            "key": editor_key,
+            "height": 420,
+            "font_size": 14,
+            "tab_size": 4,
+            "wrap": True,
+            "show_gutter": True,
+            "show_print_margin": False,
+            "auto_update": True,
+            "placeholder": "Your Python code appears here...",
+        }
+        edited_code = st_ace(**ace_kwargs)
     else:
         st.caption("Install streamlit-ace for full editor mode. Using basic text area for now.")
         edited_code = st.text_area(
@@ -80,8 +130,24 @@ with left_col:
         )
 
     if edited_code is not None:
+        if edited_code != st.session_state.code_buffer:
+            st.session_state.format_error = None
         st.session_state.editor_content = edited_code
         st.session_state.code_buffer = edited_code
+
+    if format_clicked:
+        formatted_code, format_error = format_python_code(st.session_state.code_buffer)
+
+        if format_error is not None:
+            st.session_state.format_error = format_error
+        elif formatted_code is not None:
+            st.session_state.code_buffer = formatted_code
+            st.session_state.editor_content = formatted_code
+            st.session_state.format_error = None
+            st.session_state.editor_version += 1
+            st.rerun()
+
+    show_format_error(format_error_container, st.session_state.format_error)
 
     if st.session_state.generated_code:
         st.subheader("Generated Code Preview")
@@ -93,6 +159,7 @@ with left_col:
             if snippet:
                 st.session_state.code_buffer = snippet
                 st.session_state.editor_content = snippet
+                st.session_state.format_error = None
                 st.session_state.last_inserted_code = snippet
                 st.session_state.editor_version += 1
             st.rerun()
