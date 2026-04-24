@@ -1,9 +1,11 @@
 import ast
 import os
+from pathlib import Path
 
 import black
 import requests
 import streamlit as st
+from black.parsing import InvalidInput
 
 try:
     from streamlit_ace import st_ace
@@ -12,12 +14,14 @@ except ImportError:
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def syntax_error_details(exc: SyntaxError, code: str) -> dict[str, str | int]:
     line_number = exc.lineno or 1
     lines = code.splitlines()
-    line_text = exc.text or (lines[line_number - 1] if line_number <= len(lines) else "")
+    line_text = exc.text or (
+        lines[line_number - 1] if line_number <= len(lines) else "")
 
     return {
         "line": line_number,
@@ -33,7 +37,7 @@ def format_python_code(code: str) -> tuple[str | None, dict[str, str | int] | No
         return black.format_str(code, mode=black.FileMode()), None
     except SyntaxError as exc:
         return None, syntax_error_details(exc, code)
-    except black.InvalidInput as exc:
+    except InvalidInput as exc:
         return None, {
             "line": 1,
             "column": 1,
@@ -53,7 +57,8 @@ def show_format_error(container, format_error: dict[str, str | int] | None) -> N
         )
         if format_error["text"]:
             caret_padding = " " * (int(format_error["column"]) - 1)
-            st.code(f"{format_error['text']}\n{caret_padding}^", language="python")
+            st.code(
+                f"{format_error['text']}\n{caret_padding}^", language="python")
 
 
 def show_chat_item(item: dict[str, str]) -> None:
@@ -68,8 +73,9 @@ def show_chat_item(item: dict[str, str]) -> None:
             st.caption("Code generated")
 
 
-st.set_page_config(page_title="AI Coding POC", page_icon=":computer:", layout="wide")
-st.title("AI-Assisted Coding Tool (POC)")
+st.set_page_config(page_title="AI DSA Coding",
+                   page_icon=":computer:", layout="wide")
+st.title("AI-Assisted DSA Coding Tool")
 st.caption(f"Backend URL: {BACKEND_URL}")
 
 
@@ -116,6 +122,59 @@ if "editor_version" not in st.session_state:
 if "format_error" not in st.session_state:
     st.session_state.format_error = None
 
+if "problem_statement" not in st.session_state:
+    st.session_state.problem_statement = ""
+
+if "selected_problem_file" not in st.session_state:
+    st.session_state.selected_problem_file = None
+
+
+# ── Problem Statement ──────────────────────────────────────────────────────────
+with st.expander("Problem Statement", expanded=True):
+    md_files = sorted(STATIC_DIR.glob("*.md")) if STATIC_DIR.exists() else []
+    file_names = [f.name for f in md_files]
+    display_names = {
+        f.name: f.stem.replace("_", " ").replace("-", " ").title()
+        for f in md_files
+    }
+
+    chosen = st.selectbox(
+        "Problem file",
+        options=["— select a problem —"] + file_names,
+        format_func=lambda x: display_names[x] if x in display_names else x,
+        label_visibility="collapsed",
+    )
+
+    chosen_file = STATIC_DIR / chosen if chosen in file_names else None
+    st.session_state.selected_problem_file = chosen_file
+    st.session_state.problem_statement = (
+        chosen_file.read_text(encoding="utf-8") if chosen_file else ""
+    )
+
+    if st.session_state.problem_statement:
+        st.markdown(st.session_state.problem_statement)
+
+        if chosen_file is not None:
+            starter_file = chosen_file.with_suffix(".py")
+            if starter_file.exists():
+                st.divider()
+                if st.button(
+                    "Load Starter Code",
+                    key=f"load_starter_{chosen}",
+                    help="Replaces the editor content with the starter code for this problem.",
+                ):
+                    starter_raw = starter_file.read_text(encoding="utf-8")
+                    formatted, fmt_error = format_python_code(starter_raw)
+                    if fmt_error is None and formatted is not None:
+                        st.session_state.code_buffer = formatted
+                        st.session_state.editor_content = formatted
+                        st.session_state.format_error = None
+                        st.session_state.editor_version += 1
+                        st.rerun()
+    else:
+        st.caption("Select a problem above to render its statement here.")
+
+st.divider()
 
 left_col, right_col = st.columns([2, 1], gap="large")
 
@@ -142,7 +201,8 @@ with left_col:
         }
         edited_code = st_ace(**ace_kwargs)
     else:
-        st.caption("Install streamlit-ace for full editor mode. Using basic text area for now.")
+        st.caption(
+            "Install streamlit-ace for full editor mode. Using basic text area for now.")
         edited_code = st.text_area(
             "Live code buffer",
             key=editor_key,
@@ -158,7 +218,8 @@ with left_col:
         st.session_state.code_buffer = edited_code
 
     if format_clicked:
-        formatted_code, format_error = format_python_code(st.session_state.code_buffer)
+        formatted_code, format_error = format_python_code(
+            st.session_state.code_buffer)
 
         if format_error is not None:
             st.session_state.format_error = format_error
@@ -211,7 +272,7 @@ with right_col:
     st.text_area(
         "Instruction",
         key="instruction_input",
-        height=140,
+        height=315,
         placeholder="create a hashmap to store frequency of elements",
     )
 
@@ -234,7 +295,8 @@ with right_col:
                     "status": "generating",
                 }
             )
-            st.session_state.pending_index = len(st.session_state.chat_history) - 1
+            st.session_state.pending_index = len(
+                st.session_state.chat_history) - 1
             st.session_state.is_generating = True
             st.session_state.clear_instruction_input = True
             st.rerun()
@@ -249,6 +311,7 @@ if st.session_state.is_generating and st.session_state.pending_index is not None
             response = requests.post(
                 f"{BACKEND_URL}/generate",
                 json={
+                    "problem_statement": st.session_state.problem_statement,
                     "current_code": st.session_state.code_buffer,
                     "instruction": pending_instruction,
                 },
