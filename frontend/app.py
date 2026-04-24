@@ -3,6 +3,11 @@ import os
 import requests
 import streamlit as st
 
+try:
+    from streamlit_ace import st_ace
+except ImportError:
+    st_ace = None
+
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
@@ -17,6 +22,9 @@ if "code_buffer" not in st.session_state:
 
 if "generated_code" not in st.session_state:
     st.session_state.generated_code = ""
+
+if "last_inserted_code" not in st.session_state:
+    st.session_state.last_inserted_code = ""
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -33,18 +41,47 @@ if "pending_index" not in st.session_state:
 if "clear_instruction_input" not in st.session_state:
     st.session_state.clear_instruction_input = False
 
+if "editor_content" not in st.session_state:
+    st.session_state.editor_content = st.session_state.code_buffer
+
+if "editor_version" not in st.session_state:
+    st.session_state.editor_version = 0
+
 
 left_col, right_col = st.columns([2, 1], gap="large")
 
 with left_col:
     st.subheader("Code Editor")
-    edited_code = st.text_area(
-        "Live code buffer",
-        value=st.session_state.code_buffer,
-        height=420,
-        placeholder="Your Python code appears here...",
-    )
-    st.session_state.code_buffer = edited_code
+    editor_key = f"live_code_editor_{st.session_state.editor_version}"
+
+    if st_ace is not None:
+        edited_code = st_ace(
+            value=st.session_state.editor_content,
+            language="python",
+            theme="tomorrow_night",
+            key=editor_key,
+            height=420,
+            font_size=14,
+            tab_size=4,
+            wrap=True,
+            show_gutter=True,
+            show_print_margin=False,
+            auto_update=True,
+            placeholder="Your Python code appears here...",
+        )
+    else:
+        st.caption("Install streamlit-ace for full editor mode. Using basic text area for now.")
+        edited_code = st.text_area(
+            "Live code buffer",
+            key=editor_key,
+            value=st.session_state.editor_content,
+            height=420,
+            placeholder="Your Python code appears here...",
+        )
+
+    if edited_code is not None:
+        st.session_state.editor_content = edited_code
+        st.session_state.code_buffer = edited_code
 
     if st.session_state.generated_code:
         st.subheader("Generated Code Preview")
@@ -53,10 +90,20 @@ with left_col:
         if st.button("Insert into Code"):
             current = st.session_state.code_buffer.rstrip()
             snippet = st.session_state.generated_code.strip()
-            if current and snippet:
-                st.session_state.code_buffer = f"{current}\n\n{snippet}"
-            elif snippet:
-                st.session_state.code_buffer = snippet
+            previous = st.session_state.last_inserted_code.strip()
+
+            if previous and current.endswith(previous):
+                current = current[: -len(previous)].rstrip()
+
+            if snippet:
+                if current:
+                    next_code = f"{current}\n\n{snippet}"
+                else:
+                    next_code = snippet
+                st.session_state.code_buffer = next_code
+                st.session_state.editor_content = next_code
+                st.session_state.last_inserted_code = snippet
+                st.session_state.editor_version += 1
             st.rerun()
 
 with right_col:
@@ -80,9 +127,10 @@ with right_col:
         st.session_state.instruction_input = ""
         st.session_state.clear_instruction_input = False
 
-    st.text_input(
+    st.text_area(
         "Instruction",
         key="instruction_input",
+        height=140,
         placeholder="create a hashmap to store frequency of elements",
     )
 

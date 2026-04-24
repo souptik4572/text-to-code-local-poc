@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "requests",
     "streamlit",
+    "streamlit-ace>=0.1.1",
     "uvicorn",
 ]
 
