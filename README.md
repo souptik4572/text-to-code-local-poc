@@ -1,13 +1,20 @@
-# FastAPI + Streamlit Starter
+# AI-Assisted Coding Tool (Local POC)
 
-This project contains:
+This is a minimal end-to-end POC where:
 
-- `backend/` for the FastAPI app
-- `frontend/` for the Streamlit app
-- `requirements.txt` shared by both
-- `pyproject.toml` for an additional `uv`-native workflow
+- Streamlit provides a live editable code editor and instruction input.
+- FastAPI exposes a `/generate` endpoint.
+- Ollama (Gemma) generates Python code snippets from the instruction + current code.
 
-## Setup with requirements.txt
+## Project structure
+
+- `backend/main.py` FastAPI app and `/generate` API
+- `backend/models.py` request/response models
+- `backend/prompt.py` prompt construction
+- `backend/llm.py` Ollama API integration
+- `frontend/app.py` Streamlit UI (editor, generate, preview, insert)
+
+## Setup
 
 ```bash
 python3 -m venv .venv
@@ -15,34 +22,40 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Setup with uv
+## Start Ollama (Gemma)
+
+In one terminal:
 
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv sync
+ollama serve
 ```
 
-## Run the backend
+In another terminal (first time only):
 
 ```bash
-uvicorn backend.app:app --reload --port 5000
+ollama pull gemma:latest
 ```
 
-The backend runs on `http://localhost:5000`.
+## Run backend
 
-## Run the frontend
+```bash
+uvicorn backend.main:app --reload --port 8000
+```
+
+Backend URL: `http://localhost:8000`
+
+## Run frontend
 
 ```bash
 streamlit run frontend/app.py
 ```
 
-The frontend runs on `http://localhost:8501`.
+Frontend URL: `http://localhost:8501`
 
-## Optional environment variable
-
-If your backend runs elsewhere:
+## Optional environment variables
 
 ```bash
-export BACKEND_URL=http://localhost:5000
+export BACKEND_URL=http://localhost:8000
+export OLLAMA_URL=http://localhost:11434/api/generate
+export OLLAMA_MODEL=gemma:latest
 ```
