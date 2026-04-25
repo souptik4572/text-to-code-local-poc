@@ -19,6 +19,11 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
     if not instruction:
         raise HTTPException(status_code=400, detail="instruction cannot be empty")
 
-    prompt = build_prompt(payload.problem_statement, payload.current_code, instruction)
+    prompt = build_prompt(
+        payload.problem_statement,
+        payload.current_code,
+        instruction,
+        payload.starter_code,
+    )
     generated_code = generate_code(prompt)
     return GenerateResponse(generated_code=generated_code)

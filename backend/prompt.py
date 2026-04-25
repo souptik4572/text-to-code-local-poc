@@ -1,7 +1,25 @@
 import re
 
 
-def build_prompt(problem_statement: str, current_code: str, instruction: str) -> str:
+_STUB_LINE = re.compile(r"^\s*(pass|\.\.\.)\s*$")
+
+
+def _protected_lines(starter_code: str) -> list[str]:
+    if not starter_code.strip():
+        return []
+    return [
+        line
+        for line in starter_code.splitlines()
+        if line.strip() and not _STUB_LINE.match(line)
+    ]
+
+
+def build_prompt(
+    problem_statement: str,
+    current_code: str,
+    instruction: str,
+    starter_code: str = "",
+) -> str:
     has_stub = bool(current_code.strip()) and bool(
         re.search(r"^\s*(pass|\.\.\.)\s*$", current_code, re.MULTILINE)
     )
@@ -19,6 +37,23 @@ def build_prompt(problem_statement: str, current_code: str, instruction: str) ->
             "Output a standalone snippet containing ONLY what the instruction asks for, "
             "to be placed after the existing code."
         )
+
+    protected = _protected_lines(starter_code)
+    if protected:
+        protected_block = "\n".join(protected)
+        protected_section = f"""
+<protected_lines immutable="true">
+{protected_block}
+</protected_lines>
+
+PROTECTED RULE (highest priority, overrides every other rule):
+Every line inside <protected_lines> MUST appear VERBATIM in your output — same text, same indentation, same order.
+You MUST NOT rename, retype, reword, reformat, split, merge, or remove any protected line.
+You MAY replace stub bodies (`pass` / `...`) and add NEW lines around protected lines.
+If the instruction conflicts with a protected line, output exactly: # NEED_MORE_INFORMATION
+"""
+    else:
+        protected_section = ""
 
     return f"""<system>
 You are a deterministic Python code-generation engine for DSA problems.
@@ -54,13 +89,14 @@ AMBIGUITY  : If unclear or underspecified → output exactly one line: # NEED_MO
 <existing_code>
 {current_code if current_code.strip() else "# (empty)"}
 </existing_code>
-
+{protected_section}
 <instruction authoritative="true">
 {instruction}
 </instruction>
 
 <reminder>
 Execute ONLY the <instruction> above. Output raw Python.
+Every line in <protected_lines> (if present) MUST appear verbatim in your output.
 </reminder>
 
 <output>"""

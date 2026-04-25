@@ -1,5 +1,8 @@
 import ast
+import difflib
+import html
 import os
+import re
 from pathlib import Path
 
 import black
@@ -61,6 +64,104 @@ def show_format_error(container, format_error: dict[str, str | int] | None) -> N
                 f"{format_error['text']}\n{caret_padding}^", language="python")
 
 
+def protected_starter_lines(starter_code: str) -> list[str]:
+    if not starter_code.strip():
+        return []
+    return [
+        line
+        for line in starter_code.splitlines()
+        if line.strip() and line.strip() not in ("pass", "...")
+    ]
+
+
+def starter_violations(
+    starter_code: str, current_code: str, generated_code: str
+) -> list[str]:
+    if not starter_code.strip():
+        return []
+    starter = protected_starter_lines(starter_code)
+    current_lines = set(current_code.splitlines())
+    generated_lines = set(generated_code.splitlines())
+    return [
+        line
+        for line in starter
+        if line in current_lines and line not in generated_lines
+    ]
+
+
+def _intraline_html(old_line: str, new_line: str, kind: str) -> str:
+    old_tokens = re.findall(r"\w+|\W", old_line)
+    new_tokens = re.findall(r"\w+|\W", new_line)
+    matcher = difflib.SequenceMatcher(a=old_tokens, b=new_tokens, autojunk=False)
+
+    parts: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if kind == "old":
+            chunk = "".join(old_tokens[i1:i2])
+            if not chunk:
+                continue
+            if tag == "equal":
+                parts.append(html.escape(chunk))
+            elif tag in ("replace", "delete"):
+                parts.append(
+                    f'<span class="diff-word-removed">{html.escape(chunk)}</span>'
+                )
+        else:
+            chunk = "".join(new_tokens[j1:j2])
+            if not chunk:
+                continue
+            if tag == "equal":
+                parts.append(html.escape(chunk))
+            elif tag in ("replace", "insert"):
+                parts.append(
+                    f'<span class="diff-word-added">{html.escape(chunk)}</span>'
+                )
+    return "".join(parts)
+
+
+def _diff_line(marker: str, css_class: str, content_html: str) -> str:
+    return (
+        f'<div class="diff-line {css_class}">'
+        f'<span class="diff-marker">{marker}</span>'
+        f'<span class="diff-content">{content_html or "&nbsp;"}</span>'
+        f"</div>"
+    )
+
+
+def render_unified_diff(old_code: str, new_code: str) -> str:
+    old_lines = old_code.splitlines()
+    new_lines = new_code.splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+
+    rows: list[str] = ['<div class="diff-container">']
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for line in old_lines[i1:i2]:
+                rows.append(_diff_line(" ", "diff-line-equal", html.escape(line)))
+        elif tag == "delete":
+            for line in old_lines[i1:i2]:
+                rows.append(_diff_line("-", "diff-line-removed", html.escape(line)))
+        elif tag == "insert":
+            for line in new_lines[j1:j2]:
+                rows.append(_diff_line("+", "diff-line-added", html.escape(line)))
+        elif tag == "replace":
+            old_block = old_lines[i1:i2]
+            new_block = new_lines[j1:j2]
+            pair_count = max(len(old_block), len(new_block))
+            for k in range(pair_count):
+                if k < len(old_block):
+                    counterpart = new_block[k] if k < len(new_block) else ""
+                    inner = _intraline_html(old_block[k], counterpart, "old")
+                    rows.append(_diff_line("-", "diff-line-removed", inner))
+            for k in range(pair_count):
+                if k < len(new_block):
+                    counterpart = old_block[k] if k < len(old_block) else ""
+                    inner = _intraline_html(counterpart, new_block[k], "new")
+                    rows.append(_diff_line("+", "diff-line-added", inner))
+    rows.append("</div>")
+    return "".join(rows)
+
+
 def show_chat_item(item: dict[str, str]) -> None:
     with st.container(border=True):
         st.write(item["instruction"])
@@ -81,6 +182,50 @@ st.markdown(
     <style>
         .block-container { padding-top: 1rem; padding-bottom: 1rem; }
         div[data-testid="stAppViewBlockContainer"] { padding-top: 1rem; }
+
+        .diff-container {
+            background: #1d1f21;
+            border: 1px solid #2c2f33;
+            border-radius: 6px;
+            padding: 10px 0;
+            font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.55;
+            max-height: 520px;
+            overflow: auto;
+        }
+        .diff-line {
+            display: flex;
+            align-items: flex-start;
+            padding: 0 12px;
+        }
+        .diff-line-equal { background: transparent; }
+        .diff-line-removed { background: rgba(204, 102, 102, 0.10); }
+        .diff-line-added   { background: rgba(181, 189, 104, 0.10); }
+        .diff-marker {
+            display: inline-block;
+            width: 18px;
+            flex-shrink: 0;
+            color: #6b6f73;
+            user-select: none;
+            text-align: center;
+        }
+        .diff-line-removed .diff-marker { color: #cc6666; }
+        .diff-line-added   .diff-marker { color: #b5bd68; }
+        .diff-content {
+            flex: 1;
+            color: #c5c8c6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .diff-word-removed {
+            background: rgba(204, 102, 102, 0.38);
+            border-radius: 2px;
+        }
+        .diff-word-added {
+            background: rgba(181, 189, 104, 0.38);
+            border-radius: 2px;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -139,6 +284,12 @@ if "problem_statement" not in st.session_state:
 if "selected_problem_file" not in st.session_state:
     st.session_state.selected_problem_file = None
 
+if "starter_code" not in st.session_state:
+    st.session_state.starter_code = ""
+
+if "starter_problem_file" not in st.session_state:
+    st.session_state.starter_problem_file = None
+
 
 # ── Problem Statement ──────────────────────────────────────────────────────────
 with st.expander("Problem Statement", expanded=True):
@@ -162,6 +313,10 @@ with st.expander("Problem Statement", expanded=True):
         chosen_file.read_text(encoding="utf-8") if chosen_file else ""
     )
 
+    if st.session_state.starter_problem_file != chosen_file:
+        st.session_state.starter_code = ""
+        st.session_state.starter_problem_file = None
+
     if st.session_state.problem_statement:
         st.markdown(st.session_state.problem_statement)
 
@@ -181,7 +336,15 @@ with st.expander("Problem Statement", expanded=True):
                         st.session_state.editor_content = formatted
                         st.session_state.format_error = None
                         st.session_state.editor_version += 1
+                        st.session_state.starter_code = formatted
+                        st.session_state.starter_problem_file = chosen_file
                         st.rerun()
+
+                if st.session_state.starter_code:
+                    st.caption(
+                        f"Starter loaded — {len(protected_starter_lines(st.session_state.starter_code))} "
+                        f"line(s) are protected from code generation."
+                    )
     else:
         st.caption("Select a problem above to render its statement here.")
 
@@ -244,18 +407,58 @@ with left_col:
     show_format_error(format_error_container, st.session_state.format_error)
 
     if st.session_state.generated_code:
-        st.subheader("Generated Code Preview")
-        st.code(st.session_state.generated_code, language="python")
+        st.subheader("Proposed Changes")
 
-        if st.button("Insert Into Code"):
-            snippet = st.session_state.generated_code.strip()
+        current_code = st.session_state.code_buffer
+        proposed_code = st.session_state.generated_code
 
+        violations = starter_violations(
+            st.session_state.starter_code, current_code, proposed_code
+        )
+
+        if violations:
+            st.error(
+                "Generated code drops protected starter lines. "
+                "Accept is disabled — Reject this and re-prompt."
+            )
+            with st.expander(f"Missing protected line(s): {len(violations)}"):
+                st.code("\n".join(violations), language="python")
+
+        if current_code.strip():
+            st.markdown(
+                render_unified_diff(current_code, proposed_code),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.code(proposed_code, language="python")
+
+        accept_col, reject_col = st.columns(2)
+        with accept_col:
+            accept_clicked = st.button(
+                "Accept",
+                type="primary",
+                use_container_width=True,
+                key="accept_diff",
+                disabled=bool(violations),
+            )
+        with reject_col:
+            reject_clicked = st.button(
+                "Reject", use_container_width=True, key="reject_diff"
+            )
+
+        if accept_clicked:
+            snippet = proposed_code.strip()
             if snippet:
                 st.session_state.code_buffer = snippet
                 st.session_state.editor_content = snippet
                 st.session_state.format_error = None
                 st.session_state.last_inserted_code = snippet
                 st.session_state.editor_version += 1
+            st.session_state.generated_code = ""
+            st.rerun()
+
+        if reject_clicked:
+            st.session_state.generated_code = ""
             st.rerun()
 
 with right_col:
@@ -324,6 +527,7 @@ if st.session_state.is_generating and st.session_state.pending_index is not None
                 json={
                     "problem_statement": st.session_state.problem_statement,
                     "current_code": st.session_state.code_buffer,
+                    "starter_code": st.session_state.starter_code,
                     "instruction": pending_instruction,
                 },
                 timeout=120,
