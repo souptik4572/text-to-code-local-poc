@@ -64,6 +64,37 @@ def show_format_error(container, format_error: dict[str, str | int] | None) -> N
                 f"{format_error['text']}\n{caret_padding}^", language="python")
 
 
+MAX_HISTORY = 50
+
+
+def push_history(code: str) -> None:
+    hist = st.session_state.history
+    idx = st.session_state.history_index
+    if idx < len(hist) - 1:
+        del hist[idx + 1 :]
+    if hist and hist[-1] == code:
+        return
+    hist.append(code)
+    if len(hist) > MAX_HISTORY:
+        del hist[: len(hist) - MAX_HISTORY]
+    st.session_state.history_index = len(hist) - 1
+
+
+def snapshot_if_drift(code: str) -> None:
+    hist = st.session_state.history
+    idx = st.session_state.history_index
+    if not hist or hist[idx] != code:
+        push_history(code)
+
+
+def apply_history_state() -> None:
+    code = st.session_state.history[st.session_state.history_index]
+    st.session_state.code_buffer = code
+    st.session_state.editor_content = code
+    st.session_state.format_error = None
+    st.session_state.editor_version += 1
+
+
 def protected_starter_lines(starter_code: str) -> list[str]:
     if not starter_code.strip():
         return []
@@ -74,19 +105,93 @@ def protected_starter_lines(starter_code: str) -> list[str]:
     ]
 
 
-def starter_violations(
-    starter_code: str, current_code: str, generated_code: str
-) -> list[str]:
+def starter_violations(starter_code: str, generated_code: str) -> list[str]:
     if not starter_code.strip():
         return []
     starter = protected_starter_lines(starter_code)
-    current_lines = set(current_code.splitlines())
     generated_lines = set(generated_code.splitlines())
-    return [
-        line
-        for line in starter
-        if line in current_lines and line not in generated_lines
-    ]
+    return [line for line in starter if line not in generated_lines]
+
+
+def _extract_function_body(generated_code: str) -> list[str]:
+    lines = generated_code.splitlines()
+    body: list[str] = []
+    found_def = False
+    func_indent = ""
+    for line in lines:
+        m = re.match(r"^(\s*)def\s+", line)
+        if not found_def and m:
+            found_def = True
+            func_indent = m.group(1)
+            continue
+        if not found_def:
+            continue
+        if not line.strip():
+            body.append("")
+            continue
+        line_indent = line[: len(line) - len(line.lstrip())]
+        if len(line_indent) > len(func_indent):
+            body.append(line)
+        else:
+            break
+    while body and not body[-1].strip():
+        body.pop()
+    return body
+
+
+def _reindent(lines: list[str], target_indent: str) -> list[str]:
+    body_indent = ""
+    for line in lines:
+        if line.strip():
+            body_indent = line[: len(line) - len(line.lstrip())]
+            break
+    out: list[str] = []
+    for line in lines:
+        if not line.strip():
+            out.append("")
+            continue
+        if body_indent and line.startswith(body_indent):
+            out.append(target_indent + line[len(body_indent):])
+        else:
+            out.append(target_indent + line.lstrip())
+    return out
+
+
+def resolve_against_starter(
+    starter_code: str, generated_code: str
+) -> tuple[str, bool]:
+    """Returns (resolved_code, was_resolved). If the LLM output already
+    preserves all protected starter lines, returns it unchanged."""
+    if not starter_code.strip():
+        return generated_code, False
+
+    if not starter_violations(starter_code, generated_code):
+        return generated_code, False
+
+    body = _extract_function_body(generated_code)
+    if not body:
+        protected = set(protected_starter_lines(starter_code))
+        body = [
+            line for line in generated_code.splitlines()
+            if line.strip() and line not in protected
+        ]
+
+    starter_lines = starter_code.splitlines()
+    result: list[str] = []
+    inserted = False
+    for line in starter_lines:
+        if not inserted and line.strip() in ("pass", "..."):
+            indent = line[: len(line) - len(line.lstrip())]
+            result.extend(_reindent(body, indent))
+            inserted = True
+        else:
+            result.append(line)
+
+    if not inserted and body:
+        result.append("")
+        result.extend(body)
+
+    return "\n".join(result), True
 
 
 def _intraline_html(old_line: str, new_line: str, kind: str) -> str:
@@ -290,6 +395,12 @@ if "starter_code" not in st.session_state:
 if "starter_problem_file" not in st.session_state:
     st.session_state.starter_problem_file = None
 
+if "history" not in st.session_state:
+    st.session_state.history = [""]
+
+if "history_index" not in st.session_state:
+    st.session_state.history_index = 0
+
 
 # ── Problem Statement ──────────────────────────────────────────────────────────
 with st.expander("Problem Statement", expanded=True):
@@ -332,12 +443,14 @@ with st.expander("Problem Statement", expanded=True):
                     starter_raw = starter_file.read_text(encoding="utf-8")
                     formatted, fmt_error = format_python_code(starter_raw)
                     if fmt_error is None and formatted is not None:
+                        snapshot_if_drift(st.session_state.code_buffer)
                         st.session_state.code_buffer = formatted
                         st.session_state.editor_content = formatted
                         st.session_state.format_error = None
                         st.session_state.editor_version += 1
                         st.session_state.starter_code = formatted
                         st.session_state.starter_problem_file = chosen_file
+                        push_history(formatted)
                         st.rerun()
 
                 if st.session_state.starter_code:
@@ -355,8 +468,38 @@ left_col, right_col = st.columns([2, 1], gap="large")
 with left_col:
     st.subheader("Code Editor")
     editor_key = f"live_code_editor_{st.session_state.editor_version}"
-    format_clicked = st.button("Format Python Code")
+
+    can_undo = st.session_state.history_index > 0
+    can_redo = st.session_state.history_index < len(st.session_state.history) - 1
+
+    fmt_col, undo_col, redo_col = st.columns(3)
+    with fmt_col:
+        format_clicked = st.button(
+            "Format Python Code", use_container_width=True, key="format_btn"
+        )
+    with undo_col:
+        undo_clicked = st.button(
+            "Undo", use_container_width=True, key="undo_btn", disabled=not can_undo
+        )
+    with redo_col:
+        redo_clicked = st.button(
+            "Redo", use_container_width=True, key="redo_btn", disabled=not can_redo
+        )
+
     format_error_container = st.empty()
+
+    if undo_clicked:
+        snapshot_if_drift(st.session_state.code_buffer)
+        if st.session_state.history_index > 0:
+            st.session_state.history_index -= 1
+        apply_history_state()
+        st.rerun()
+
+    if redo_clicked:
+        if st.session_state.history_index < len(st.session_state.history) - 1:
+            st.session_state.history_index += 1
+        apply_history_state()
+        st.rerun()
 
     if st_ace is not None:
         ace_kwargs = {
@@ -398,10 +541,12 @@ with left_col:
         if format_error is not None:
             st.session_state.format_error = format_error
         elif formatted_code is not None:
+            snapshot_if_drift(st.session_state.code_buffer)
             st.session_state.code_buffer = formatted_code
             st.session_state.editor_content = formatted_code
             st.session_state.format_error = None
             st.session_state.editor_version += 1
+            push_history(formatted_code)
             st.rerun()
 
     show_format_error(format_error_container, st.session_state.format_error)
@@ -410,19 +555,20 @@ with left_col:
         st.subheader("Proposed Changes")
 
         current_code = st.session_state.code_buffer
-        proposed_code = st.session_state.generated_code
-
-        violations = starter_violations(
-            st.session_state.starter_code, current_code, proposed_code
+        proposed_code, was_resolved = resolve_against_starter(
+            st.session_state.starter_code, st.session_state.generated_code
         )
 
-        if violations:
-            st.error(
-                "Generated code drops protected starter lines. "
-                "Accept is disabled — Reject this and re-prompt."
+        if was_resolved:
+            formatted, _fmt_err = format_python_code(proposed_code)
+            if formatted is not None:
+                proposed_code = formatted
+
+            st.info(
+                "Generated code didn't preserve the starter — "
+                "merged the LLM output into the starter so the protected "
+                "lines stay intact."
             )
-            with st.expander(f"Missing protected line(s): {len(violations)}"):
-                st.code("\n".join(violations), language="python")
 
         if current_code.strip():
             st.markdown(
@@ -435,11 +581,7 @@ with left_col:
         accept_col, reject_col = st.columns(2)
         with accept_col:
             accept_clicked = st.button(
-                "Accept",
-                type="primary",
-                use_container_width=True,
-                key="accept_diff",
-                disabled=bool(violations),
+                "Accept", type="primary", use_container_width=True, key="accept_diff"
             )
         with reject_col:
             reject_clicked = st.button(
@@ -449,11 +591,13 @@ with left_col:
         if accept_clicked:
             snippet = proposed_code.strip()
             if snippet:
+                snapshot_if_drift(st.session_state.code_buffer)
                 st.session_state.code_buffer = snippet
                 st.session_state.editor_content = snippet
                 st.session_state.format_error = None
                 st.session_state.last_inserted_code = snippet
                 st.session_state.editor_version += 1
+                push_history(snippet)
             st.session_state.generated_code = ""
             st.rerun()
 
