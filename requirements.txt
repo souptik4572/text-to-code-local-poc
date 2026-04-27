@@ -3,4 +3,4 @@ fastapi
 uvicorn
 streamlit
 streamlit-ace
-requests
+ollama

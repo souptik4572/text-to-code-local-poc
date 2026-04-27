@@ -1,29 +1,35 @@
 import os
+import re
 
-import requests
-
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+import ollama
 
 
-def _strip_markdown_fences(text: str) -> str:
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct")
+
+
+def _strip_fences(text: str) -> str:
+    # Remove ```python / ```py / ``` wrappers the model emits despite instructions
     stripped = text.strip()
-    if stripped.startswith("```") and stripped.endswith("```"):
-        lines = stripped.splitlines()
-        if len(lines) >= 2:
-            return "\n".join(lines[1:-1]).strip()
+    match = re.match(r"^```[a-zA-Z]*\n(.*?)```$", stripped, re.DOTALL)
+    if match:
+        return match.group(1).strip()
     return stripped
 
 
-def generate_code(prompt: str) -> str:
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-    }
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    response.raise_for_status()
-    data = response.json()
-    raw_text = data.get("response", "")
-    return _strip_markdown_fences(raw_text)
+def generate_code(prompt: dict) -> str:
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": prompt["system"]},
+            {"role": "user", "content": prompt["user"]},
+        ],
+        options={
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "repeat_penalty": 1.1,
+            "num_predict": 256,
+        },
+    )
+    message = response.get("message") if isinstance(response, dict) else getattr(response, "message", None)
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+    return _strip_fences(content or "")

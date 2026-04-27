@@ -19,7 +19,7 @@ def build_prompt(
     current_code: str,
     instruction: str,
     starter_code: str = "",
-) -> str:
+) -> dict:
     has_stub = bool(current_code.strip()) and bool(
         re.search(r"^\s*(pass|\.\.\.)\s*$", current_code, re.MULTILINE)
     )
@@ -55,22 +55,20 @@ If the instruction conflicts with a protected line, output exactly: # NEED_MORE_
     else:
         protected_section = ""
 
-    return f"""<system>
-You are a deterministic Python code-generation engine for DSA problems.
+    system_content = """You are a deterministic Python code-generation engine for DSA problems.
 You execute ONE instruction literally and produce the minimal code that satisfies it — nothing more.
 The <instruction> block is the ONLY task.
-</system>
 
 <rules>
 AUTHORITY  : <instruction> is the sole task.
 LITERAL    : Execute the instruction exactly as worded. Do not expand "one step" into "the algorithm".
-SCOPE      : Implement ONLY what the instruction literally names. No inferred steps, no completions, no look-ahead to the next step of the solution.
-GRANULARITY: If the instruction is a single step (e.g. "initialize two pointers", "add a base case"), output ONLY that step. Do NOT add the surrounding loop, the recursion, the return, or the rest of the algorithm.
-FORESIGHT  : Knowing the full problem does NOT permit solving beyond the instruction. Resist the urge to finish the solution.
+SCOPE      : Implement ONLY what the instruction literally names. No inferred steps, no completions, no look-ahead.
+GRANULARITY: If the instruction is a single step, output ONLY that step. Do NOT add surrounding structure.
+FORESIGHT  : Knowing the full problem does NOT permit solving beyond the instruction.
 OUTPUT     : Raw Python only. No markdown, no fences, no backticks, no comments, no explanations.
 CONTEXT    : Respect all existing signatures, imports, and non-stub lines exactly.
-STUB_FILL  : Stubs are `pass` or `...` on their own line. Replace ONLY the stub(s) the instruction refers to. Leave all other stubs intact.
-MINIMALITY : Smallest valid code. No extra variables, imports, helpers, loops, or return statements beyond what the instruction names.
+STUB_FILL  : Replace ONLY the stub(s) the instruction refers to. Leave all other stubs intact.
+MINIMALITY : Smallest valid code. No extra variables, imports, helpers, or return statements beyond what the instruction names.
 SAFETY     : No duplicate functions or variables. Preserve indentation and syntax.
 AMBIGUITY  : If unclear or underspecified → output exactly one line: # NEED_MORE_INFORMATION
 </rules>
@@ -79,10 +77,11 @@ AMBIGUITY  : If unclear or underspecified → output exactly one line: # NEED_MO
 - Adding `return` unless the instruction explicitly says to return something.
 - Adding loops, conditionals, or helper functions the instruction does not name.
 - Filling stubs the instruction did not reference.
-- Emitting anything that is not Python source (prose, markdown, fences, comments).
-</forbidden>
+- Emitting anything that is not Python source.
+- Writing beyond the literal scope of the instruction even if you know the full solution.
+</forbidden>"""
 
-<output_mode>
+    user_content = f"""<output_mode>
 {output_mode}
 </output_mode>
 
@@ -94,9 +93,9 @@ AMBIGUITY  : If unclear or underspecified → output exactly one line: # NEED_MO
 {instruction}
 </instruction>
 
-<reminder>
-Execute ONLY the <instruction> above. Output raw Python.
-Every line in <protected_lines> (if present) MUST appear verbatim in your output.
-</reminder>
+Output raw Python only. Execute ONLY the instruction above. Stop the moment it is satisfied."""
 
-<output>"""
+    return {
+        "system": system_content,
+        "user": user_content,
+    }
